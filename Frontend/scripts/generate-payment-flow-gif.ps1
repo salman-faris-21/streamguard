@@ -10,21 +10,22 @@ $outDir = Join-Path $PSScriptRoot "..\docs\assets"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $gifPath = Join-Path $outDir "streamguard-payment-flow.gif"
 
-$paper = [System.Drawing.Color]::FromArgb(244, 240, 230)
-$card = [System.Drawing.Color]::FromArgb(255, 253, 248)
-$line = [System.Drawing.Color]::FromArgb(214, 204, 188)
-$ink = [System.Drawing.Color]::FromArgb(28, 25, 21)
-$muted = [System.Drawing.Color]::FromArgb(107, 100, 91)
-$moss = [System.Drawing.Color]::FromArgb(31, 107, 69)
-$mossDeep = [System.Drawing.Color]::FromArgb(20, 74, 48)
-$soft = [System.Drawing.Color]::FromArgb(231, 243, 234)
-$arrowIdle = [System.Drawing.Color]::FromArgb(196, 184, 168)
+$paper = [System.Drawing.Color]::FromArgb(248, 250, 252)
+$card = [System.Drawing.Color]::FromArgb(255, 255, 255)
+$line = [System.Drawing.Color]::FromArgb(203, 213, 225)
+$ink = [System.Drawing.Color]::FromArgb(15, 23, 42)
+$muted = [System.Drawing.Color]::FromArgb(71, 85, 105)
+$moss = [System.Drawing.Color]::FromArgb(29, 78, 216)
+$mossDeep = [System.Drawing.Color]::FromArgb(30, 58, 138)
+$soft = [System.Drawing.Color]::FromArgb(219, 234, 254)
+$arrowIdle = [System.Drawing.Color]::FromArgb(148, 163, 184)
+$white = [System.Drawing.Color]::FromArgb(255, 255, 255)
 
-$titleFont = New-Object System.Drawing.Font "Georgia", 28, ([System.Drawing.FontStyle]::Regular)
+$titleFont = New-Object System.Drawing.Font "Segoe UI", 26, ([System.Drawing.FontStyle]::Bold)
 $labelFont = New-Object System.Drawing.Font "Segoe UI", 13, ([System.Drawing.FontStyle]::Bold)
 $subFont = New-Object System.Drawing.Font "Segoe UI", 10
-$captionFont = New-Object System.Drawing.Font "Segoe UI", 15
-$stepFont = New-Object System.Drawing.Font "Segoe UI", 11, ([System.Drawing.FontStyle]::Bold)
+$captionFont = New-Object System.Drawing.Font "Segoe UI", 16, ([System.Drawing.FontStyle]::Bold)
+$stepFont = New-Object System.Drawing.Font "Segoe UI", 12, ([System.Drawing.FontStyle]::Bold)
 
 $nodes = @(
   @{ Id = 0; X = 36;  Y = 118; W = 196; H = 84; Title = "Customer UI"; Sub = "React" },
@@ -42,18 +43,18 @@ $nodes = @(
 )
 
 $captions = @(
-  "The customer books a product in the React UI.",
-  "The UI calls the API gateway. It does not call a service port directly.",
-  "Order service stores the order as PENDING.",
-  "Payment service loads that order and creates the Razorpay order.",
-  "The browser opens Checkout with the server-created order id and amount.",
-  "Razorpay sends the webhook to the payment service. The browser does not.",
-  "The payment service accepts the webhook only after the signature matches.",
-  "Payment status and the outbox row commit in the same database transaction.",
-  "The scheduled publisher sends pending outbox rows and waits for Kafka.",
-  "PUBLISHED means Kafka acknowledged the record, not that the order changed.",
-  "The order consumer applies the event once, then ignores the same payment id.",
-  "The order becomes PAID or CANCELLED. The UI confirms only from that status."
+  "Step 1. The customer books an item. Nothing is paid yet.",
+  "Step 2. The React app calls the API gateway, not a service directly.",
+  "Step 3. Order service saves the order as PENDING.",
+  "Step 4. Payment service creates the Razorpay order for that amount.",
+  "Step 5. Checkout opens in the browser. This is not confirmation.",
+  "Step 6. Razorpay sends the webhook to the server. The browser does not.",
+  "Step 7. The payment service checks the webhook signature before continuing.",
+  "Step 8. Payment status and the outbox row are saved in one transaction.",
+  "Step 9. A job publishes the outbox row to Kafka about every 5 seconds.",
+  "Step 10. PUBLISHED means Kafka accepted it. The order may still be pending.",
+  "Step 11. The order service applies this payment once and skips duplicates.",
+  "Step 12. The order becomes PAID or CANCELLED. The UI waits for that."
 )
 
 function New-RoundPath([single]$x, [single]$y, [single]$w, [single]$h, [single]$r) {
@@ -109,7 +110,7 @@ function Draw-Frame([int]$active) {
   $g.DrawString("StreamGuard", $titleFont, $header, 36, 28)
   $header.Dispose()
   $subBrush = New-Object System.Drawing.SolidBrush $muted
-  $g.DrawString("Payment flow  ·  one step at a time", $subFont, $subBrush, 40, 72)
+  $g.DrawString("Follow the blue box. Pale blue boxes are already done.", $subFont, $subBrush, 40, 70)
   $stepText = "Step $($active + 1) of 12"
   $stepSize = $g.MeasureString($stepText, $stepFont)
   $stepBrush = New-Object System.Drawing.SolidBrush $mossDeep
@@ -157,8 +158,10 @@ function Draw-Frame([int]$active) {
     $fill = $card
     $border = $line
     $borderWidth = 1.5
-    if ($done) { $fill = $soft; $border = $moss }
-    if ($hot) { $fill = $soft; $border = $moss; $borderWidth = 3.5 }
+    $titleColor = $ink
+    $subColor = $muted
+    if ($done) { $fill = $soft; $border = $moss; $titleColor = $mossDeep }
+    if ($hot) { $fill = $moss; $border = $mossDeep; $borderWidth = 3; $titleColor = $white; $subColor = $soft }
     $path = New-RoundPath $node.X $node.Y $node.W $node.H 16
     $brush = New-Object System.Drawing.SolidBrush $fill
     $pen = New-Object System.Drawing.Pen $border, $borderWidth
@@ -168,28 +171,28 @@ function Draw-Frame([int]$active) {
     $pen.Dispose()
     $path.Dispose()
 
-    $titleBrush = New-Object System.Drawing.SolidBrush $ink
+    $titleBrush = New-Object System.Drawing.SolidBrush $titleColor
     $titleSize = $g.MeasureString($node.Title, $labelFont)
     $tx = $node.X + (($node.W - $titleSize.Width) / 2)
     $g.DrawString($node.Title, $labelFont, $titleBrush, $tx, ($node.Y + 22))
     $titleBrush.Dispose()
 
-    $small = New-Object System.Drawing.SolidBrush $(if ($hot) { $mossDeep } else { $muted })
+    $small = New-Object System.Drawing.SolidBrush $subColor
     $subSize = $g.MeasureString($node.Sub, $subFont)
     $sx = $node.X + (($node.W - $subSize.Width) / 2)
     $g.DrawString($node.Sub, $subFont, $small, $sx, ($node.Y + 48))
     $small.Dispose()
   }
 
-  $bar = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 253, 248))
-  $g.FillRectangle($bar, 36, 524, 1048, 78)
+  $bar = New-Object System.Drawing.SolidBrush $ink
+  $g.FillRectangle($bar, 28, 516, 1064, 96)
   $bar.Dispose()
-  $barPen = New-Object System.Drawing.Pen $line, 1.5
-  $g.DrawRectangle($barPen, 36, 524, 1048, 78)
-  $barPen.Dispose()
 
-  $capBrush = New-Object System.Drawing.SolidBrush $ink
-  $g.DrawString($captions[$active], $captionFont, $capBrush, 56, 548)
+  $capBrush = New-Object System.Drawing.SolidBrush $white
+  $caption = $captions[$active]
+  $captionSize = $g.MeasureString($caption, $captionFont)
+  $captionX = [Math]::Max(48, (1120 - $captionSize.Width) / 2)
+  $g.DrawString($caption, $captionFont, $capBrush, $captionX, 548)
   $capBrush.Dispose()
   $subBrush.Dispose()
 
@@ -224,8 +227,8 @@ for ($i = 0; $i -lt 12; $i++) {
   $source = Convert-ToBitmapSource $small
   $small.Dispose()
   $meta = New-Object System.Windows.Media.Imaging.BitmapMetadata "gif"
-  $delay = 120
-  if ($i -eq 11) { $delay = 220 }
+  $delay = 450
+  if ($i -eq 11) { $delay = 600 }
   $meta.SetQuery("/grctlext/Delay", [uint16]$delay)
   $meta.SetQuery("/grctlext/Disposal", [byte]2)
   if ($i -eq 0) {
