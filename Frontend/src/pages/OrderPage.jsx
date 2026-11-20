@@ -4,7 +4,7 @@ import Alert from "../components/Alert";
 import ProductMark from "../components/ProductMark";
 import StatusBadge from "../components/StatusBadge";
 import { getOrder } from "../api/orders";
-import { createPayment } from "../api/payments";
+import { createPayment, getPayment } from "../api/payments";
 import { getErrorMessage } from "../api/client";
 import { ORDER_STATUS, PAYMENT_STATUS } from "../api/endpoints";
 import { readOrderContext, saveOrderContext } from "../utils/session";
@@ -37,6 +37,17 @@ export default function OrderPage() {
         if (!ignore) {
           setOrder(response);
         }
+        const storedPaymentId = readOrderContext(orderId)?.paymentId;
+        if (storedPaymentId) {
+          try {
+            const paymentResponse = await getPayment(storedPaymentId);
+            if (!ignore) {
+              setPayment(paymentResponse);
+            }
+          } catch {
+            // Keep the order visible even if payment status is still loading.
+          }
+        }
       } catch (err) {
         if (!ignore) {
           setLoadError(getErrorMessage(err));
@@ -64,13 +75,29 @@ export default function OrderPage() {
 
     async function refresh() {
       try {
-        const response = await getOrder(orderId);
+        const orderResponse = await getOrder(orderId);
         if (ignore) {
           return;
         }
-        setOrder(response);
+        setOrder(orderResponse);
         setActionError("");
-        if (response.status === ORDER_STATUS.PAID || response.status === ORDER_STATUS.CANCELLED) {
+
+        const paymentId = payment?.paymentId || context?.paymentId;
+        if (paymentId) {
+          try {
+            const paymentResponse = await getPayment(paymentId);
+            if (ignore) {
+              return;
+            }
+            setPayment(paymentResponse);
+          } catch (err) {
+            if (!ignore) {
+              setActionError(getErrorMessage(err));
+            }
+          }
+        }
+
+        if (orderResponse.status === ORDER_STATUS.PAID || orderResponse.status === ORDER_STATUS.CANCELLED) {
           setPhase("settled");
           return;
         }
@@ -90,7 +117,7 @@ export default function OrderPage() {
       ignore = true;
       window.clearInterval(timer);
     };
-  }, [phase, orderId]);
+  }, [phase, orderId, context?.paymentId]);
 
   async function handlePay() {
     setActionError("");
@@ -106,6 +133,8 @@ export default function OrderPage() {
 
       const paymentResponse = await createPayment(orderId, idempotencyKey);
       setPayment(paymentResponse);
+      saveOrderContext(orderId, { ...nextContext, paymentId: paymentResponse.paymentId });
+      setContext({ ...nextContext, paymentId: paymentResponse.paymentId });
 
       if (paymentResponse.status === PAYMENT_STATUS.SUCCESS) {
         setCheckoutNote("The payment service already recorded success. Waiting for the order to update.");
@@ -116,8 +145,16 @@ export default function OrderPage() {
       if (paymentResponse.status === PAYMENT_STATUS.FAILED) {
         const retryKey = crypto.randomUUID();
         const retried = await createPayment(orderId, retryKey);
-        saveOrderContext(orderId, { ...nextContext, idempotencyKey: retryKey });
-        setContext({ ...nextContext, idempotencyKey: retryKey });
+        saveOrderContext(orderId, {
+          ...nextContext,
+          idempotencyKey: retryKey,
+          paymentId: retried.paymentId,
+        });
+        setContext({
+          ...nextContext,
+          idempotencyKey: retryKey,
+          paymentId: retried.paymentId,
+        });
         setPayment(retried);
         await launchCheckout(retried, nextContext.product);
         return;
@@ -231,7 +268,9 @@ export default function OrderPage() {
       <aside className="rounded-3xl border border-line bg-card p-6 shadow-card sm:p-8" aria-live="polite">
         {confirmed ? <ConfirmedPanel /> : null}
         {failed ? <FailedPanel /> : null}
-        {pending && waiting ? <ProcessingPanel note={checkoutNote} /> : null}
+        {pending && waiting ? (
+          <ProcessingPanel note={checkoutNote} paymentStatus={payment?.status} />
+        ) : null}
         {pending && phase === "timeout" ? (
           <TimeoutPanel note={checkoutNote} onCheckAgain={() => setPhase("processing")} />
         ) : null}
@@ -294,19 +333,24 @@ function PayPanel({ paying, error, note, onPay }) {
   );
 }
 
-function ProcessingPanel({ note }) {
+function ProcessingPanel({ note, paymentStatus }) {
+  const paymentPending = !paymentStatus || paymentStatus === PAYMENT_STATUS.PENDING;
   return (
     <div>
       <h2 className="font-display text-3xl">Verifying payment</h2>
       <p className="mt-3 text-sm leading-6 text-stone-600">
-        The payment service verifies Razorpay’s webhook, writes the payment and an outbox event, then publishes to Kafka. This page refreshes the order until the order service reports PAID or CANCELLED.
+        {paymentPending
+          ? "The payment is still PENDING. Razorpay’s webhook has not finished updating the payment service."
+          : "The payment service has an outcome. This page still waits for the order service before confirmation."}
       </p>
       {note ? (
         <div className="mt-4">
           <Alert tone="info">{note}</Alert>
         </div>
       ) : null}
-      <p className="mt-6 text-sm font-medium text-moss">Checking order status…</p>
+      <p className="mt-6 text-sm font-medium text-moss">
+        {paymentPending ? "Checking payment status…" : "Checking order status…"}
+      </p>
     </div>
   );
 }

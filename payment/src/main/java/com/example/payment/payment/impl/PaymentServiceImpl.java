@@ -23,6 +23,7 @@ import com.razorpay.Order;
 
 import org.json.JSONObject;
 
+import feign.FeignException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +33,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 @Transactional
@@ -67,9 +69,8 @@ public class PaymentServiceImpl implements PaymentService {
             PaymentRequestDTO request,
             String idempotencyKey) {
 
-        // 1. Retrieve order details through Order Service
-        OrderResponseDTO order =
-                orderClient.getOrderById(request.getOrderId());
+        // 1. Retrieve the caller's order. Order Service enforces X-User-Id.
+        OrderResponseDTO order = loadOwnedOrder(request.getOrderId());
 
 
         // 2. Check idempotency
@@ -173,6 +174,44 @@ public class PaymentServiceImpl implements PaymentService {
                     HttpStatus.BAD_REQUEST,
                     "Invalid payment amount",
                     e
+            );
+        }
+    }
+
+    @Override
+    public PaymentResponseDTO getPayment(UUID paymentId, String customerId) {
+        if (customerId == null || customerId.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Authenticated user identity is required"
+            );
+        }
+
+        Payment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Payment not found"));
+
+        OrderResponseDTO order = loadOwnedOrder(payment.getOrderId());
+
+        if (!customerId.equals(order.getCustomerId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Payment not found");
+        }
+
+        return PaymentMapper.toResponseDTO(payment);
+    }
+
+    private OrderResponseDTO loadOwnedOrder(UUID orderId) {
+        try {
+            return orderClient.getOrderById(orderId);
+        } catch (FeignException exception) {
+            if (exception.status() == HttpStatus.NOT_FOUND.value()
+                    || exception.status() == HttpStatus.FORBIDDEN.value()
+                    || exception.status() == HttpStatus.UNAUTHORIZED.value()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+            }
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Unable to load order",
+                    exception
             );
         }
     }
@@ -300,10 +339,9 @@ public class PaymentServiceImpl implements PaymentService {
         outboxEvent.setPayload(payload);
 
         outboxEvent.setStatus("PENDING");
-
-        outboxEvent.setCreatedAt(
-                LocalDateTime.now()
-        );
+        outboxEvent.setRetryCount(0);
+        outboxEvent.setNextAttemptAt(LocalDateTime.now());
+        outboxEvent.setCreatedAt(LocalDateTime.now());
 
 
         // 11. Save Outbox Event

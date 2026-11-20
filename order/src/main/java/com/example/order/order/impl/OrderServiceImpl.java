@@ -9,7 +9,9 @@ import com.example.order.order.dto.OrderResponseDTO;
 import com.example.order.order.enums.OrderStatus;
 
 import com.example.order.order.mapper.OrderMapper;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.UUID;
 
@@ -23,9 +25,9 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
-    public OrderResponseDTO createOrder(OrderRequestDTO request) {
+    public OrderResponseDTO createOrder(OrderRequestDTO request, String customerId) {
 
-        Order order = OrderMapper.toEntity(request);
+        Order order = OrderMapper.toEntity(request, requireCustomerId(customerId));
 
         Order savedOrder = orderRepository.save(order);
 
@@ -33,21 +35,36 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
-    public OrderResponseDTO getOrderById(UUID orderId) {
+    public OrderResponseDTO getOrderById(UUID orderId, String customerId) {
 
         Order order = orderRepository.findById(orderId)
-                .orElseThrow(() -> new RuntimeException("Order not found"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
+
+        if (!order.getCustomerId().equals(requireCustomerId(customerId))) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+        }
 
         return OrderMapper.toResponseDTO(order);
     }
+
     @Override
     public void updateOrderStatus(UUID orderId, OrderStatus status) {
 
         Order order = orderRepository.findById(orderId)
-                .orElseThrow(() -> new RuntimeException("Order not found"));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
 
         order.setStatus(status);
 
         orderRepository.save(order);
+    }
+
+    private String requireCustomerId(String customerId) {
+        if (customerId == null || customerId.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Authenticated user identity is required"
+            );
+        }
+        return customerId;
     }
 }

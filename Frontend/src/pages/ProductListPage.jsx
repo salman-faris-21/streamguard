@@ -5,12 +5,10 @@ import Alert from "../components/Alert";
 import { products } from "../data/products";
 import { createOrder } from "../api/orders";
 import { getErrorMessage } from "../api/client";
-import { useAuth } from "../auth/AuthContext";
-import { getCustomerId, saveOrderContext } from "../utils/session";
+import { saveOrderContext } from "../utils/session";
 
 export default function ProductListPage() {
   const navigate = useNavigate();
-  const { email } = useAuth();
   const [booking, setBooking] = useState(null);
   const [error, setError] = useState("");
 
@@ -19,7 +17,6 @@ export default function ProductListPage() {
     setBooking(product.id);
     try {
       const order = await createOrder({
-        customerId: getCustomerId(email),
         numberOfItems: 1,
         amount: product.price,
         currency: product.currency,

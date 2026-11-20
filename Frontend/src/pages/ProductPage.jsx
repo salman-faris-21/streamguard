@@ -5,15 +5,13 @@ import ProductMark from "../components/ProductMark";
 import { findProduct } from "../data/products";
 import { createOrder } from "../api/orders";
 import { getErrorMessage } from "../api/client";
-import { useAuth } from "../auth/AuthContext";
-import { getCustomerId, saveOrderContext } from "../utils/session";
+import { saveOrderContext } from "../utils/session";
 import { formatMoney } from "../utils/format";
 
 export default function ProductPage() {
   const { productId } = useParams();
   const product = findProduct(productId);
   const navigate = useNavigate();
-  const { email } = useAuth();
   const [booking, setBooking] = useState(false);
   const [error, setError] = useState("");
 
@@ -33,7 +31,6 @@ export default function ProductPage() {
     setBooking(true);
     try {
       const order = await createOrder({
-        customerId: getCustomerId(email),
         numberOfItems: 1,
         amount: product.price,
         currency: product.currency,

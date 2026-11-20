@@ -15,6 +15,7 @@ export const endpoints = {
   createOrder: "/api/orders",
   getOrder: (orderId) => `/api/orders/${orderId}`,
   createPayment: "/api/payments",
+  getPayment: (paymentId) => `/api/payments/${paymentId}`,
 };
 
 export const ORDER_STATUS = {

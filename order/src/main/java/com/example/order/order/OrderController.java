@@ -13,6 +13,8 @@ import java.util.UUID;
 @RequestMapping("/api/orders")
 public class OrderController {
 
+    public static final String USER_ID_HEADER = "X-User-Id";
+
     private final OrderService orderService;
 
     public OrderController(OrderService orderService) {
@@ -21,19 +23,22 @@ public class OrderController {
 
     @PostMapping
     public ResponseEntity<OrderResponseDTO> createOrder(
-            @Valid @RequestBody OrderRequestDTO request) {
+            @Valid @RequestBody OrderRequestDTO request,
+            @RequestHeader(value = USER_ID_HEADER, required = false) String customerId) {
 
-        OrderResponseDTO response = orderService.createOrder(request);
+        OrderResponseDTO response = orderService.createOrder(request, customerId);
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
                 .body(response);
     }
+
     @GetMapping("/{orderId}")
     public ResponseEntity<OrderResponseDTO> getOrderById(
-            @PathVariable UUID orderId) {
+            @PathVariable UUID orderId,
+            @RequestHeader(value = USER_ID_HEADER, required = false) String customerId) {
 
-        OrderResponseDTO response = orderService.getOrderById(orderId);
+        OrderResponseDTO response = orderService.getOrderById(orderId, customerId);
 
         return ResponseEntity.ok(response);
     }

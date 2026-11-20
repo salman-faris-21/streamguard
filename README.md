@@ -13,9 +13,11 @@ The animation below is the implemented path, one component at a time. It is a di
 - Razorpay calls `POST /api/webhooks/razorpay` on the payment service. The React app never calls that route.
 - The webhook signature is checked before payment state changes.
 - The payment update and the outbox insert are in one payment-service transaction.
-- A scheduled publisher sends pending outbox rows to Kafka and marks them `PUBLISHED` only after Kafka acknowledges.
+- The gateway takes the JWT subject (email), strips any client `X-User-Id` header, and injects the authenticated identity itself.
+- Orders belong to that identity. The UI does not send a customer UUID.
+- A scheduled publisher sends pending outbox rows to Kafka, retries with backoff, marks them `PUBLISHED` after Kafka acknowledges, and marks them `FAILED` after the retry limit.
 - The order consumer updates the order once per payment id and ignores a repeated delivery of that same id.
-- The UI shows confirmation only when the order status from the order service is `PAID`.
+- The UI polls payment status while waiting, and shows confirmation only when the order status is `PAID`.
 
 ## Tech stack
 
@@ -59,19 +61,19 @@ If the animation does not play, the diagram above is the same path.
 
 ## What each service owns
 
-- **React UI** (`Frontend`): mock catalog, order creation, Pay Now, Razorpay Checkout, then polling the order. Checkout callbacks are not treated as confirmation.
-- **API gateway** (`gateway`): external HTTP entry on port 8083. See the route note in the endpoint inventory.
-- **Order service** (`order`): creates orders as `PENDING`, reads an order by id, and consumes `payment-events`.
-- **Payment service** (`payment`): creates a payment for a `PENDING` order, creates the Razorpay order, verifies the webhook, and writes the outbox row.
-- **Outbox publisher**: every 5 seconds, loads outbox rows with status `PENDING`, publishes them, and sets `PUBLISHED` after Kafka acknowledgement.
+- **React UI** (`Frontend`): mock catalog, sign-in, order creation, Pay Now, Razorpay Checkout, payment-status polling, then order confirmation. Checkout callbacks are not treated as confirmation.
+- **API gateway** (`gateway`): JWT login/register, route forwarding, and `X-User-Id` injection from the JWT subject.
+- **Order service** (`order`): creates orders as `PENDING` for the gateway-injected identity, returns only that user's orders, and consumes `payment-events`.
+- **Payment service** (`payment`): creates a payment for a `PENDING` order, creates the Razorpay order, verifies the webhook, exposes payment status by id, and writes the outbox row.
+- **Outbox publisher**: loads due `PENDING` rows, publishes them, retries with exponential backoff, and sets `FAILED` after `streamguard.outbox.max-retries`.
 - **Order consumer**: maps `SUCCESS` to `PAID` and `FAILED` to `CANCELLED`.
 
 `PUBLISHED` means the publisher received a Kafka acknowledgement. It does not mean the order service has processed the event. Those are separate transactions.
 
 ## Payment lifecycle
 
-1. The customer clicks Book. The UI sends `customerId`, `numberOfItems`, `amount`, and `currency` through the gateway.
-2. `OrderServiceImpl` saves the order. `@PrePersist` sets status `PENDING`.
+1. The customer clicks Book. The UI sends `numberOfItems`, `amount`, and `currency`. The gateway adds `X-User-Id` from the JWT subject.
+2. `OrderServiceImpl` saves the order for that identity. `@PrePersist` sets status `PENDING`.
 3. The customer clicks Pay Now. The UI sends `{ "orderId" }` and an `Idempotency-Key` header.
 4. The payment service loads the order with Feign (`OrderClient` calls `GET /api/orders/{orderId}`).
 5. A reused idempotency key returns the existing payment when the order, amount, and currency match. A reused key with different details returns HTTP 409.
@@ -84,9 +86,9 @@ If the animation does not play, the diagram above is the same path.
 12. Amount and currency are compared with the stored payment. A mismatch is rejected.
 13. If the payment is already in that status, processing returns without another outbox row.
 14. Otherwise the payment update and a new `outbox_events` row commit together. The row status is `PENDING`. The event type is `PAYMENT_SUCCESS` or `PAYMENT_FAILED`.
-15. `OutboxPublisher` publishes the payload to Kafka topic `payment-events`, with the order id as the message key, and sets the outbox row to `PUBLISHED` after acknowledgement. A publish failure leaves the row `PENDING` so the next run can try again. There is no separate retry counter or dead-letter topic in this code.
+15. `OutboxPublisher` publishes the payload to Kafka topic `payment-events`, with the order id as the message key, and sets the outbox row to `PUBLISHED` after acknowledgement. A publish failure increments `retryCount`, stores `lastError` and `lastAttemptedAt`, and waits until `nextAttemptAt`. After `streamguard.outbox.max-retries` the row is stored as `FAILED`. There is no Kafka dead-letter topic.
 16. `PaymentEventConsumer` ignores the event when `processed_payment_events` already contains that `paymentId`. Otherwise it updates the order and saves the processed-payment row in the same consumer transaction.
-17. The UI polls `GET /api/orders/{orderId}` and confirms only on `PAID`. `CANCELLED` is the failed outcome.
+17. The UI polls `GET /api/payments/{paymentId}` for payment status and `GET /api/orders/{orderId}` for confirmation. Confirmation is only `PAID`. `CANCELLED` is the failed order outcome.
 
 Illustrative event body, matching `PaymentEvent` fields:
 
@@ -104,7 +106,16 @@ Illustrative event body, matching `PaymentEvent` fields:
 
 `PaymentServiceImpl` is annotated `@Transactional`. The webhook handler updates `payments` and inserts `outbox_events` before that transaction commits. Kafka is outside the database transaction.
 
-Outbox statuses used by this code are the strings `PENDING` and `PUBLISHED`. `publishedAt` is set when the row becomes `PUBLISHED`.
+Outbox statuses used by this code are `PENDING`, `PUBLISHED`, and `FAILED`. `publishedAt` is set when the row becomes `PUBLISHED`. Failed rows stay in `outbox_events` with the last error so they can be inspected without a Kafka dead-letter topic.
+
+Retry settings in `payment/src/main/resources/application.properties`:
+
+```
+streamguard.outbox.max-retries=8
+streamguard.outbox.initial-backoff-ms=5000
+streamguard.outbox.max-backoff-ms=300000
+streamguard.outbox.poll-interval-ms=5000
+```
 
 ## Kafka and the consumer
 
@@ -120,7 +131,7 @@ Duplicate handling that is actually implemented:
 - `processed_payment_events.payment_id` has a unique constraint, `uk_processed_payment_id`.
 - The payment service also skips a webhook whose new status equals the stored status, so it does not write a second outbox row for that same outcome.
 
-What is not implemented: a retry count, a dead-letter topic, or an outbox status other than `PENDING` and `PUBLISHED`. If Kafka is down, the row stays `PENDING` and the 5-second job tries again. If the consumer throws, Spring Kafka's container error handling applies; this repository does not add a custom error handler.
+If Kafka is down, the row stays `PENDING` until `nextAttemptAt`. After the retry limit it is `FAILED` and is not published again. There is no Kafka dead-letter topic. If the consumer throws, Spring Kafka's container error handling applies; this repository does not add a custom consumer error handler.
 
 ## Endpoint inventory
 
@@ -130,9 +141,10 @@ Controller paths below are the gateway routes in `gateway/src/main/resources/app
 | --- | --- | --- | --- | --- | --- |
 | POST | `/api/auth/register` | `username` (3–30), `email`, `password` (at least 8). HTTP 200. | `{ "token": "<jwt>" }` | `AuthController` | Registration |
 | POST | `/api/auth/login` | `email`, `password`. HTTP 200. | `{ "token": "<jwt>" }` | `AuthController` | Sign in |
-| POST | `/api/orders` | `customerId` UUID, `numberOfItems` positive integer, `amount` positive decimal, `currency` 3 characters. Header `Authorization: Bearer <jwt>`. HTTP 201. | `id`, `customerId`, `numberOfItems`, `totalAmount`, `currency`, `status`, `createdAt`, `updatedAt` | `OrderController` | Book |
-| GET | `/api/orders/{orderId}` | Order UUID. Bearer token required. | Same order body. Missing order throws `Order not found`. | `OrderController` | Order screen and status polling |
+| POST | `/api/orders` | `numberOfItems`, `amount`, `currency`. Bearer token required. Gateway injects `X-User-Id`. HTTP 201. | `id`, `customerId` (JWT email), `numberOfItems`, `totalAmount`, `currency`, `status`, `createdAt`, `updatedAt` | `OrderController` | Book |
+| GET | `/api/orders/{orderId}` | Order UUID. Bearer token required. Returns 404 if the order is not the caller's. | Same order body. | `OrderController` | Order screen and confirmation polling |
 | POST | `/api/payments` | Body `orderId` UUID. Headers `Authorization: Bearer <jwt>` and `Idempotency-Key`. HTTP 201. | `paymentId`, `orderId`, `razorpayOrderId`, `amount`, `currency`, `status` | `PaymentController` | Pay Now |
+| GET | `/api/payments/{paymentId}` | Payment UUID. Bearer token required. Ownership checked through the related order. | Same payment body. | `PaymentController` | Payment-status polling |
 | POST | `/api/webhooks/razorpay` | Raw body and `X-Razorpay-Signature`. This route is not declared on the gateway. | Plain text | `PaymentWebhookController` | Razorpay only. Not the browser. |
 
 Order statuses: `PENDING`, `PAID`, `CANCELLED`.
@@ -187,7 +199,7 @@ VITE_RAZORPAY_KEY_ID=
 2. Open the product list and book an available item, such as Harbor Headphones.
 3. Read the order id and `PENDING` status returned by the order service.
 4. Click Pay Now. Complete or close Razorpay Checkout.
-5. Stay on the order screen. It polls the order. Closing Checkout, or a Checkout success callback, does not mark the order paid.
+5. Stay on the order screen. It polls payment status and the order. Closing Checkout, or a Checkout success callback, does not mark the order paid.
 6. After the webhook, outbox publish, and consumer run, the order status becomes `PAID` or `CANCELLED`.
 7. A `CANCELLED` order cannot be paid again. Payment initiation allows only `PENDING` orders, so book a new item to retry.
 
@@ -205,10 +217,8 @@ node .\scripts\ensure-gif-loop.cjs
 ## Limitations and roadmap
 
 - `PaymentResponseDTO` does not include the Razorpay key id. Checkout uses `VITE_RAZORPAY_KEY_ID`.
-- The order request still requires a UUID `customerId`. The JWT subject is the email, so the UI keeps a demo customer id per account.
 - The webhook path is not declared on the gateway. Razorpay calls the payment service.
 - Orders do not store a product id. The catalog is frontend mock data.
-- There is no payment-status read API. The UI polls the order.
 - Local order and payment services share one Postgres database in their property files.
-- Outbox publish failure is retried only by leaving the row `PENDING`. There is no dead-letter topic.
-- `create-drop` wipes local schema on shutdown.
+- Exhausted outbox rows are stored as `FAILED` in `outbox_events`. There is no Kafka dead-letter topic.
+- Changing `orders.customer_id` from UUID to email requires a local schema refresh if old rows exist.

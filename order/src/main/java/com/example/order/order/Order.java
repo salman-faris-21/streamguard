@@ -15,8 +15,8 @@ public class Order {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(nullable = false)
-    private UUID customerId;
+    @Column(nullable = false, length = 255)
+    private String customerId;
 
     @Column(nullable = false)
     private Integer numberOfItems;
@@ -58,11 +58,11 @@ public class Order {
         this.id = id;
     }
 
-    public UUID getCustomerId() {
+    public String getCustomerId() {
         return customerId;
     }
 
-    public void setCustomerId(UUID customerId) {
+    public void setCustomerId(String customerId) {
         this.customerId = customerId;
     }
 

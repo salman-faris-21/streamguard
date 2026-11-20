@@ -49,9 +49,10 @@ Gateway routes are explicit: `/api/orders/**` and `/api/payments/**`. Auth is `P
 | --- | --- | --- | --- | --- | --- |
 | POST | `/api/auth/register` | `username`, `email`, `password` | `{ "token": "<jwt>" }` | `AuthController` | Create account |
 | POST | `/api/auth/login` | `email`, `password` | `{ "token": "<jwt>" }` | `AuthController` | Sign in |
-| POST | `/api/orders` | `OrderRequestDTO`: `customerId` (UUID), `numberOfItems`, `amount`, `currency`. Bearer token required. Returns 201. | `id`, `customerId`, `numberOfItems`, `totalAmount`, `currency`, `status`, `createdAt`, `updatedAt` | `OrderController` | Book |
-| GET | `/api/orders/{orderId}` | Path `orderId` (UUID). Bearer token required. | Same order body. Missing orders throw `Order not found`. | `OrderController.getOrderById` | Load the order and poll until `PAID` or `CANCELLED` |
+| POST | `/api/orders` | `numberOfItems`, `amount`, `currency`. Bearer token required. Gateway injects identity. Returns 201. | `id`, `customerId` (email), `numberOfItems`, `totalAmount`, `currency`, `status`, `createdAt`, `updatedAt` | `OrderController` | Book |
+| GET | `/api/orders/{orderId}` | Path `orderId` (UUID). Bearer token required. | Same order body. Missing or foreign orders return 404. | `OrderController.getOrderById` | Load the order and poll until `PAID` or `CANCELLED` |
 | POST | `/api/payments` | Body `orderId`. Headers `Authorization` and `Idempotency-Key`. Returns 201. | `paymentId`, `orderId`, `razorpayOrderId`, `amount`, `currency`, `status` | `PaymentController` | Pay Now, then Razorpay Checkout |
+| GET | `/api/payments/{paymentId}` | Path `paymentId`. Bearer token required. | Same payment body. | `PaymentController` | Poll payment status while waiting |
 | POST | `/api/webhooks/razorpay` | Raw body plus `X-Razorpay-Signature`. Not routed by the gateway config. | Plain text | `PaymentWebhookController` | Not called by this app |
 
 Order status values from `OrderStatus`: `PENDING`, `PAID`, `CANCELLED`. New orders are stored as `PENDING`. The order consumer maps payment `SUCCESS` to `PAID` and `FAILED` to `CANCELLED`.
@@ -63,9 +64,7 @@ Direct service ports, not used by the UI: order `8086`, payment `8084`, gateway 
 ## Backend integration gaps
 
 - **No Razorpay key id in `PaymentResponseDTO`.** Checkout needs the public key. It is supplied with `VITE_RAZORPAY_KEY_ID`. The key secret stays in `razorpay.key.secret` on the payment service.
-- **The order API still requires `customerId`.** The gateway user id is a number and the JWT subject is the email, so the UI stores a stable demo UUID per signed-in email.
 - **No product field on the order.** The UI keeps the mock catalog item in `sessionStorage` for display.
-- **No payment read endpoint.** Payment status shown after Pay Now is the create-payment response. Later confirmation uses the order status only.
 - **`POST /api/webhooks/razorpay` is not a gateway route.** Razorpay must call the payment service directly. The browser does not call it.
 - **`order.order.dto.PaymentRequestDTO` is not exposed** by `OrderController`. Payment initiation is only `POST /api/payments`.
 

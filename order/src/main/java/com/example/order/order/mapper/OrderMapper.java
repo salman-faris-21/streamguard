@@ -7,12 +7,11 @@ import com.example.order.order.dto.OrderResponseDTO;
 
 public class OrderMapper {
 
-    // Request DTO -> Entity
-    public static Order toEntity(OrderRequestDTO request) {
+    public static Order toEntity(OrderRequestDTO request, String customerId) {
 
         Order order = new Order();
 
-        order.setCustomerId(request.getCustomerId());
+        order.setCustomerId(customerId);
         order.setNumberOfItems(request.getNumberOfItems());
         order.setTotalAmount(request.getAmount());
         order.setCurrency(request.getCurrency());
@@ -20,7 +19,6 @@ public class OrderMapper {
         return order;
     }
 
-    // Entity -> Response DTO
     public static OrderResponseDTO toResponseDTO(Order order) {
 
         OrderResponseDTO response = new OrderResponseDTO();
