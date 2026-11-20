@@ -217,8 +217,6 @@ node .\scripts\ensure-gif-loop.cjs
 ## Limitations and roadmap
 
 - `PaymentResponseDTO` does not include the Razorpay key id. Checkout uses `VITE_RAZORPAY_KEY_ID`.
-- The webhook path is not declared on the gateway. Razorpay calls the payment service.
 - Orders do not store a product id. The catalog is frontend mock data.
 - Local order and payment services share one Postgres database in their property files.
-- Exhausted outbox rows are stored as `FAILED` in `outbox_events`. There is no Kafka dead-letter topic.
 - Changing `orders.customer_id` from UUID to email requires a local schema refresh if old rows exist.
