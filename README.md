@@ -1,96 +1,124 @@
-# StreamGuard
+# StreamGuard — Event-Driven Payment Microservices
 
-StreamGuard follows one payment from a React checkout through an API gateway, Razorpay, a verified webhook, a transactional outbox, and Kafka, until the order service records the outcome.
+StreamGuard is an event-driven payment system built with Spring Boot microservices. It integrates Razorpay for payment processing, Apache Kafka for asynchronous event communication, PostgreSQL for persistence, and Spring Cloud for service discovery, centralized configuration, and API routing.
 
-The animation below is the implemented path, one component at a time. It is a diagram, not a live trace, and it does not show latency or success rates.
+The React client books a product, creates an order, starts a payment, and waits for the backend order status. Payment success is never decided from the browser Checkout callback alone.
+
+Backend service images are published to Docker Hub. The frontend is packaged with Docker and Nginx.
 
 ![StreamGuard payment flow](docs/assets/streamguard-payment-flow.gif)
 
-## Feature highlights
-
-- A small React catalog. Booking creates a real order. The UI does not invent a paid order locally.
-- Payment initiation loads the order in the payment service and creates the Razorpay order there. The browser only receives the resulting checkout details.
-- Razorpay calls `POST /api/webhooks/razorpay` on the payment service. The React app never calls that route.
-- The webhook signature is checked before payment state changes.
-- The payment update and the outbox insert are in one payment-service transaction.
-- The gateway takes the JWT subject (email), strips any client `X-User-Id` header, and injects the authenticated identity itself.
-- Orders belong to that identity. The UI does not send a customer UUID.
-- A scheduled publisher sends pending outbox rows to Kafka, retries with backoff, marks them `PUBLISHED` after Kafka acknowledges, and marks them `FAILED` after the retry limit.
-- The order consumer updates the order once per payment id and ignores a repeated delivery of that same id.
-- The UI polls payment status while waiting, and shows confirmation only when the order status is `PAID`.
-
-## Tech stack
-
-| Piece | What the repository uses |
-| --- | --- |
-| Frontend | React, JSX, React Router, Axios, Tailwind CSS, Vite |
-| Gateway | Spring Cloud Gateway server WebMVC, Eureka client, port 8083 |
-| Order service | Spring Boot, JPA, Kafka consumer, port 8086 |
-| Payment service | Spring Boot, JPA, Razorpay Java client, Feign, scheduled outbox publisher, port 8084 |
-| Discovery | Eureka server in `service-reg`, port 8761 |
-| Config | Spring Cloud Config native profile, port 8888, optional import |
-| Data | PostgreSQL 18 from `payment/docker-compose.yaml`, host port 5435 |
-| Messaging | Apache Kafka from that same compose file, host port 9092 |
-| Provider | Razorpay Checkout and Razorpay webhooks |
+The animation above walks the implemented payment path one step at a time. It is a diagram, not a live trace, and it does not invent latency or success-rate figures. If the GIF does not play, use the Mermaid diagram below.
 
 ## Architecture
 
+StreamGuard uses centralized routing, service discovery, and asynchronous payment outcome delivery.
+
+### Services
+
+| Service | Port | Description |
+| --- | ---: | --- |
+| Config Server | 8888 | Centralized configuration |
+| Eureka Server | 8761 | Service registration and discovery |
+| API Gateway | 8083 | JWT auth, routing, and authenticated identity injection |
+| Payment Service | 8084 | Razorpay initiation, webhook verification, outbox publishing |
+| Order Service | 8086 | Order ownership and payment-event consumption |
+| PostgreSQL | 5435 | Persistent storage |
+| Kafka | 9092 | `payment-events` topic |
+| PgAdmin | 5051 | PostgreSQL administration |
+| Frontend | 3000 | React client (Vite locally on 5173; Nginx container on 3000) |
+
+### System diagram
+
 ```mermaid
 flowchart TD
-    U[Customer / React UI] --> G[API Gateway :8083]
-    G --> O[Order Service :8086]
-    G --> P[Payment Service :8084]
-    P -->|Feign GET /api/orders/id| O
-    P --> R[Razorpay Checkout]
+    A[React Frontend] --> B[API Gateway :8083]
+    B --> C[Order Service :8086]
+    B --> D[Payment Service :8084]
+    D -->|Feign GET /api/orders/id| C
+    D --> R[Razorpay Checkout]
     R -->|Server-to-server webhook| W[PaymentWebhookController]
-    W --> S[PaymentServiceImpl]
-    S --> DBP[(payments + outbox_events)]
-    DBP --> PUB[OutboxPublisher every 5s]
-    PUB --> K[Kafka topic payment-events]
-    K --> C[PaymentEventConsumer]
-    C --> DBO[(orders + processed_payment_events)]
-    CS[Config Server :8888] -. optional config .-> G
-    CS -. optional config .-> O
-    CS -. optional config .-> P
-    E[Eureka :8761] -. discovery .-> G
-    E -. discovery .-> O
-    E -. discovery .-> P
+    W --> S[Payment service + Outbox]
+    S --> E[(PostgreSQL)]
+    C --> E
+    S --> F[Kafka: payment-events]
+    F --> C
+    B --> G[Eureka :8761]
+    C --> G
+    D --> G
+    H[Config Server :8888] -. optional config .-> B
+    H -. optional config .-> C
+    H -. optional config .-> D
+    H -. optional config .-> G
 ```
 
-If the animation does not play, the diagram above is the same path.
+## Tech stack
 
-## What each service owns
+- Java and Spring Boot
+- Spring Cloud Gateway, Eureka, and Config Server
+- Spring Data JPA and Hibernate
+- PostgreSQL
+- Apache Kafka
+- Razorpay
+- JWT authentication on the gateway
+- Transactional Outbox with retry and `FAILED` terminal status
+- Docker, Spring Boot Buildpacks, and Docker Hub
+- React, Vite, Axios, Tailwind CSS, and Nginx
 
-- **React UI** (`Frontend`): mock catalog, sign-in, order creation, Pay Now, Razorpay Checkout, payment-status polling, then order confirmation. Checkout callbacks are not treated as confirmation.
-- **API gateway** (`gateway`): JWT login/register, route forwarding, and `X-User-Id` injection from the JWT subject.
-- **Order service** (`order`): creates orders as `PENDING` for the gateway-injected identity, returns only that user's orders, and consumes `payment-events`.
-- **Payment service** (`payment`): creates a payment for a `PENDING` order, creates the Razorpay order, verifies the webhook, exposes payment status by id, and writes the outbox row.
-- **Outbox publisher**: loads due `PENDING` rows, publishes them, retries with exponential backoff, and sets `FAILED` after `streamguard.outbox.max-retries`.
-- **Order consumer**: maps `SUCCESS` to `PAID` and `FAILED` to `CANCELLED`.
+## Core features
 
-`PUBLISHED` means the publisher received a Kafka acknowledgement. It does not mean the order service has processed the event. Those are separate transactions.
+### Microservices
+
+- Independent Order and Payment services
+- API Gateway for centralized routing
+- Eureka-based discovery
+- Spring Cloud Config with optional native import
+
+### Authentication and identity
+
+- Register and login on the gateway: `POST /api/auth/register`, `POST /api/auth/login`
+- JWT returned as `{ "token": "..." }`
+- Authenticated routes require `Authorization: Bearer <jwt>`
+- The gateway strips any client-supplied `X-User-Id` and injects the JWT subject (email)
+- Orders are owned by that identity; the frontend does not send a demo customer UUID
+
+### Payment processing
+
+- Razorpay order creation in Payment Service
+- Server-to-server webhook verification with HMAC-SHA256
+- Payment status API: `GET /api/payments/{paymentId}`
+- Idempotent payment creation with `Idempotency-Key`
+
+### Event-driven communication
+
+- Kafka topic `payment-events`
+- Transactional Outbox: payment update and outbox insert commit together
+- Outbox publisher with exponential backoff, retry count, last error, and `FAILED` after the configured limit
+- Order consumer ignores duplicate `paymentId` values using `processed_payment_events`
+
+### Containerization
+
+- Backend images built with Spring Boot Buildpacks
+- Images published to Docker Hub
+- Frontend containerized with Node build + Nginx
+- Compose orchestration under `payment/docker-compose.yaml`
 
 ## Payment lifecycle
 
-1. The customer clicks Book. The UI sends `numberOfItems`, `amount`, and `currency`. The gateway adds `X-User-Id` from the JWT subject.
-2. `OrderServiceImpl` saves the order for that identity. `@PrePersist` sets status `PENDING`.
-3. The customer clicks Pay Now. The UI sends `{ "orderId" }` and an `Idempotency-Key` header.
-4. The payment service loads the order with Feign (`OrderClient` calls `GET /api/orders/{orderId}`).
-5. A reused idempotency key returns the existing payment when the order, amount, and currency match. A reused key with different details returns HTTP 409.
-6. Payment is rejected unless the order is `PENDING`.
-7. The service saves a `PENDING` payment, creates a Razorpay order for the order amount in paise, and stores `razorpayOrderId`.
-8. The browser opens Razorpay Checkout with that order id, amount, and currency.
-9. Razorpay posts the webhook to the payment service. The UI does not.
-10. `PaymentWebhookController` checks `X-Razorpay-Signature` with HMAC-SHA256. A bad signature returns HTTP 400 and does not change payment state.
-11. `payment.captured` / `captured` becomes `SUCCESS`. `payment.failed` / `failed` becomes `FAILED`. Other events return without a status change.
-12. Amount and currency are compared with the stored payment. A mismatch is rejected.
-13. If the payment is already in that status, processing returns without another outbox row.
-14. Otherwise the payment update and a new `outbox_events` row commit together. The row status is `PENDING`. The event type is `PAYMENT_SUCCESS` or `PAYMENT_FAILED`.
-15. `OutboxPublisher` publishes the payload to Kafka topic `payment-events`, with the order id as the message key, and sets the outbox row to `PUBLISHED` after acknowledgement. A publish failure increments `retryCount`, stores `lastError` and `lastAttemptedAt`, and waits until `nextAttemptAt`. After `streamguard.outbox.max-retries` the row is stored as `FAILED`. There is no Kafka dead-letter topic.
-16. `PaymentEventConsumer` ignores the event when `processed_payment_events` already contains that `paymentId`. Otherwise it updates the order and saves the processed-payment row in the same consumer transaction.
-17. The UI polls `GET /api/payments/{paymentId}` for payment status and `GET /api/orders/{orderId}` for confirmation. Confirmation is only `PAID`. `CANCELLED` is the failed order outcome.
+1. Client signs in through the gateway and receives a JWT.
+2. Book sends `numberOfItems`, `amount`, and `currency`. The gateway adds `X-User-Id`.
+3. Order Service stores the order as `PENDING` for that identity.
+4. Pay Now calls Payment Service with `{ "orderId" }` and `Idempotency-Key`.
+5. Payment Service loads the caller's order, creates a Razorpay order, and returns checkout details.
+6. The browser opens Razorpay Checkout. Closing Checkout is not confirmation.
+7. Razorpay posts to `POST /api/webhooks/razorpay`. The browser never calls this route.
+8. Signature, amount, and currency are verified. Payment status becomes `SUCCESS` or `FAILED`.
+9. Payment status and an outbox row are saved in one database transaction.
+10. The publisher sends the event to Kafka, then marks the outbox row `PUBLISHED`. Publish failures retry with backoff and become `FAILED` after `streamguard.outbox.max-retries`.
+11. Order Service consumes the event once and sets the order to `PAID` or `CANCELLED`.
+12. The UI polls payment status and order status. Confirmation is only order `PAID`.
 
-Illustrative event body, matching `PaymentEvent` fields:
+Illustrative event body:
 
 ```json
 {
@@ -104,119 +132,193 @@ Illustrative event body, matching `PaymentEvent` fields:
 
 ## Transactional outbox
 
-`PaymentServiceImpl` is annotated `@Transactional`. The webhook handler updates `payments` and inserts `outbox_events` before that transaction commits. Kafka is outside the database transaction.
+`PaymentServiceImpl` is `@Transactional`. The webhook updates `payments` and inserts `outbox_events` before that transaction commits. Kafka publication is outside the database transaction.
 
-Outbox statuses used by this code are `PENDING`, `PUBLISHED`, and `FAILED`. `publishedAt` is set when the row becomes `PUBLISHED`. Failed rows stay in `outbox_events` with the last error so they can be inspected without a Kafka dead-letter topic.
+Outbox statuses: `PENDING`, `PUBLISHED`, `FAILED`.
+
+`PUBLISHED` means Kafka acknowledged the record. It does not mean Order Service has processed it.
 
 Retry settings in `payment/src/main/resources/application.properties`:
 
-```
+```properties
 streamguard.outbox.max-retries=8
 streamguard.outbox.initial-backoff-ms=5000
 streamguard.outbox.max-backoff-ms=300000
 streamguard.outbox.poll-interval-ms=5000
 ```
 
-## Kafka and the consumer
-
-- Topic: `payment-events`
-- Producer: `PaymentEventProducer`
-- Consumer group: `order-service-group`
-- Consumer class: `PaymentEventConsumer`
-- Producer type headers are turned off (`spring.json.add.type.headers=false`). The consumer uses `spring.json.use.type.headers=false` and defaults the JSON type to `com.example.order.order.event.PaymentEvent`.
-
-Duplicate handling that is actually implemented:
-
-- The consumer returns immediately when `ProcessedPaymentEventRepository.existsByPaymentId` is true.
-- `processed_payment_events.payment_id` has a unique constraint, `uk_processed_payment_id`.
-- The payment service also skips a webhook whose new status equals the stored status, so it does not write a second outbox row for that same outcome.
-
-If Kafka is down, the row stays `PENDING` until `nextAttemptAt`. After the retry limit it is `FAILED` and is not published again. There is no Kafka dead-letter topic. If the consumer throws, Spring Kafka's container error handling applies; this repository does not add a custom consumer error handler.
+There is no Kafka dead-letter topic. Exhausted rows remain in `outbox_events` as `FAILED` with `lastError`.
 
 ## Endpoint inventory
 
-Controller paths below are the gateway routes in `gateway/src/main/resources/application.properties`. Discovery locator is disabled. `/api/orders/**` goes to the order service and `/api/payments/**` goes to the payment service. Auth is handled on the gateway.
+Gateway routes from `gateway/src/main/resources/application.properties`:
 
-| Method | Gateway path | Request | Response | Owner | Used by |
-| --- | --- | --- | --- | --- | --- |
-| POST | `/api/auth/register` | `username` (3–30), `email`, `password` (at least 8). HTTP 200. | `{ "token": "<jwt>" }` | `AuthController` | Registration |
-| POST | `/api/auth/login` | `email`, `password`. HTTP 200. | `{ "token": "<jwt>" }` | `AuthController` | Sign in |
-| POST | `/api/orders` | `numberOfItems`, `amount`, `currency`. Bearer token required. Gateway injects `X-User-Id`. HTTP 201. | `id`, `customerId` (JWT email), `numberOfItems`, `totalAmount`, `currency`, `status`, `createdAt`, `updatedAt` | `OrderController` | Book |
-| GET | `/api/orders/{orderId}` | Order UUID. Bearer token required. Returns 404 if the order is not the caller's. | Same order body. | `OrderController` | Order screen and confirmation polling |
-| POST | `/api/payments` | Body `orderId` UUID. Headers `Authorization: Bearer <jwt>` and `Idempotency-Key`. HTTP 201. | `paymentId`, `orderId`, `razorpayOrderId`, `amount`, `currency`, `status` | `PaymentController` | Pay Now |
-| GET | `/api/payments/{paymentId}` | Payment UUID. Bearer token required. Ownership checked through the related order. | Same payment body. | `PaymentController` | Payment-status polling |
-| POST | `/api/webhooks/razorpay` | Raw body and `X-Razorpay-Signature`. This route is not declared on the gateway. | Plain text | `PaymentWebhookController` | Razorpay only. Not the browser. |
+- `/api/orders/**` → Order Service
+- `/api/payments/**` → Payment Service
+- `/api/webhooks/**` → Payment Service
+- `/api/auth/**` served by the gateway
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| POST | `/api/auth/register` | `username`, `email`, `password` → `{ token }` |
+| POST | `/api/auth/login` | `email`, `password` → `{ token }` |
+| POST | `/api/orders` | Bearer required. Body: `numberOfItems`, `amount`, `currency`. Identity from `X-User-Id`. |
+| GET | `/api/orders/{orderId}` | Bearer required. Returns 404 for another user's order. |
+| POST | `/api/payments` | Bearer + `Idempotency-Key`. Body: `{ "orderId" }`. |
+| GET | `/api/payments/{paymentId}` | Bearer required. Ownership checked through the related order. |
+| POST | `/api/webhooks/razorpay` | Razorpay only. `X-Razorpay-Signature`. Permit-all on the gateway. |
 
 Order statuses: `PENDING`, `PAID`, `CANCELLED`.
 
 Payment statuses: `PENDING`, `SUCCESS`, `FAILED`.
 
-Direct ports, for service-to-service calls only: order 8086, payment 8084. The UI is written against the gateway paths.
+## Docker Hub images
 
-## Local setup
+| Service | Docker Image |
+| --- | --- |
+| Config Server | [streamguard-config-server](https://hub.docker.com/r/salmanfaris21/streamguard-config-server) |
+| Eureka Server | [streamguard-eureka](https://hub.docker.com/r/salmanfaris21/streamguard-eureka) |
+| Payment Service | [streamguard-payment](https://hub.docker.com/r/salmanfaris21/streamguard-payment) |
+| Order Service | [streamguard-order](https://hub.docker.com/r/salmanfaris21/streamguard-order) |
+| API Gateway | [streamguard-gateway](https://hub.docker.com/r/salmanfaris21/streamguard-gateway) |
+| Frontend | [streamguard-frontend](https://hub.docker.com/r/salmanfaris21/streamguard-frontend) |
 
-From the repository root:
+## Building backend Docker images
 
-1. Start PostgreSQL, pgAdmin, and Kafka.
+Spring Boot services can use Buildpacks:
 
-```bash
-docker compose -f payment/docker-compose.yaml up -d
+```powershell
+.\mvnw spring-boot:build-image -DskipTests "-Dspring-boot.build-image.imageName=salmanfaris21/streamguard-payment"
 ```
 
-Host ports: Postgres `5435`, Kafka `9092`, pgAdmin `5051`. The compose file contains local demo credentials. Use those only on your machine, and change them before any shared environment. Do not copy them into frontend config.
+```powershell
+docker push salmanfaris21/streamguard-payment
+```
 
-2. Start Eureka (`service-reg`, port 8761). Config Server on port 8888 is optional; service imports use `optional:configserver:http://localhost:8888`. Its native search path is `~/streamguard-config/`.
-3. Export Razorpay settings for the payment service: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`. Point the Razorpay webhook at the payment service webhook route, not at the browser.
-4. Start `payment` (8084), `order` (8086), and `gateway` (8083). Order and payment both use database `streamguard` on `localhost:5435` in their local properties. Tables are separate: `orders`, `payments`, `outbox_events`, `processed_payment_events`.
-5. Start the UI:
+Use the same pattern for `streamguard-order`, `streamguard-gateway`, `streamguard-eureka`, and `streamguard-config-server`.
 
-```bash
+## Frontend containerization
+
+The React app is built with Node and served by Nginx. Dockerfile: `Frontend/Dockerfile`.
+
+```powershell
+cd Frontend
+docker build -t salmanfaris21/streamguard-frontend .
+docker push salmanfaris21/streamguard-frontend
+```
+
+## Docker Compose
+
+Compose definition: `payment/docker-compose.yaml`.
+
+It starts PostgreSQL, PgAdmin, Kafka, Config Server, Eureka, Payment, Order, Gateway, and Frontend.
+
+Sensitive values come from the environment / `.env` next to the compose file:
+
+```env
+STREAMGUARD_JWT_SECRET=your_jwt_secret
+RAZORPAY_KEY_ID=your_key_id
+RAZORPAY_KEY_SECRET=your_key_secret
+RAZORPAY_WEBHOOK_SECRET=your_webhook_secret
+```
+
+Do not commit real secrets. Local compose still contains demo Postgres/pgAdmin credentials for development only.
+
+### Start
+
+```powershell
+cd payment
+docker compose pull
+docker compose up -d
+```
+
+If you are building locally instead of pulling Hub images, use `docker compose up -d --build` from the directory that matches the compose `build:` contexts.
+
+### Status and logs
+
+```powershell
+docker compose ps
+docker compose logs -f
+```
+
+### Stop
+
+```powershell
+docker compose down
+```
+
+## Local development without full Compose
+
+1. Start Postgres, Kafka, and PgAdmin:
+
+```powershell
+docker compose -f payment/docker-compose.yaml up -d postgres kafka pgadmin
+```
+
+2. Start Eureka (`service-reg`, 8761). Config Server (8888) is optional.
+3. Export `STREAMGUARD_JWT_SECRET`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET`.
+4. Start Payment (8084), Order (8086), and Gateway (8083).
+5. Point the Razorpay webhook at the payment webhook route, not the browser.
+6. Start the UI:
+
+```powershell
 cd Frontend
 npm install
 copy .env.example .env
 npm run dev
 ```
 
-Open `http://localhost:5173`. Set `VITE_API_BASE_URL` to `http://localhost:8083`. The UI sends `Authorization: Bearer` on order and payment calls. Set `VITE_RAZORPAY_KEY_ID` to the public key id. Never put the key secret or webhook secret in `Frontend`. Restart the gateway after the CORS change so the browser on port 5173 can call port 8083.
+Open `http://localhost:5173`. Set:
 
-`spring.jpa.hibernate.ddl-auto=create-drop` is set on order and payment, so local tables are dropped when those processes stop.
-
-## Environment example
-
-```bash
-RAZORPAY_KEY_ID=
-RAZORPAY_KEY_SECRET=
-RAZORPAY_WEBHOOK_SECRET=
-
-# Frontend/.env
+```env
 VITE_API_BASE_URL=http://localhost:8083
-VITE_RAZORPAY_KEY_ID=
+VITE_RAZORPAY_KEY_ID=your_public_key_id
 ```
+
+Never put the Razorpay key secret or webhook secret in the frontend.
+
+## Access URLs
+
+| Service | URL |
+| --- | --- |
+| Frontend (Compose/Nginx) | http://localhost:3000 |
+| Frontend (Vite local) | http://localhost:5173 |
+| API Gateway | http://localhost:8083 |
+| Payment Service | http://localhost:8084 |
+| Order Service | http://localhost:8086 |
+| Eureka Dashboard | http://localhost:8761 |
+| Config Server | http://localhost:8888 |
+| PgAdmin | http://localhost:5051 |
 
 ## Demo walkthrough
 
-1. Register or sign in. The gateway returns a JWT, and the UI stores it.
-2. Open the product list and book an available item, such as Harbor Headphones.
-3. Read the order id and `PENDING` status returned by the order service.
-4. Click Pay Now. Complete or close Razorpay Checkout.
-5. Stay on the order screen. It polls payment status and the order. Closing Checkout, or a Checkout success callback, does not mark the order paid.
-6. After the webhook, outbox publish, and consumer run, the order status becomes `PAID` or `CANCELLED`.
-7. A `CANCELLED` order cannot be paid again. Payment initiation allows only `PENDING` orders, so book a new item to retry.
+1. Register or sign in.
+2. Book an available product.
+3. Confirm the order is `PENDING`.
+4. Pay Now and complete or close Razorpay Checkout.
+5. Watch payment status and order status. Confirmation appears only when the order is `PAID`.
+6. A `CANCELLED` order cannot be paid again; book a new item to retry.
 
-## Screenshots
+## Animation asset
 
-UI screenshots are not stored in the repository. The animated diagram at the top of this file is the flow asset: `docs/assets/streamguard-payment-flow.gif`.
+Source GIF: `docs/assets/streamguard-payment-flow.gif`
 
-Regenerate it from `Frontend` with:
+Regenerate from `Frontend`:
 
-```bash
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\generate-payment-flow-gif.ps1
 node .\scripts\ensure-gif-loop.cjs
 ```
 
 ## Limitations and roadmap
 
-- `PaymentResponseDTO` does not include the Razorpay key id. Checkout uses `VITE_RAZORPAY_KEY_ID`.
-- Orders do not store a product id. The catalog is frontend mock data.
-- Local order and payment services share one Postgres database in their property files.
+- Checkout still needs the public Razorpay key in `VITE_RAZORPAY_KEY_ID` because `PaymentResponseDTO` does not return it.
+- The catalog is frontend mock data; orders do not store a product name.
+- Order and Payment share one Postgres database in the current local/docker setup; tables remain separate.
+- Exhausted outbox rows are `FAILED` in the database. There is no Kafka dead-letter topic.
 - Changing `orders.customer_id` from UUID to email requires a local schema refresh if old rows exist.
+- Planned next steps: Kubernetes deployment, CI/CD, monitoring/observability, and stronger multi-environment resilience.
+
+---
+
+StreamGuard — reliable payment workflows through event-driven microservices.

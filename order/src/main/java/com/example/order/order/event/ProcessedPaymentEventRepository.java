@@ -10,4 +10,6 @@ public interface ProcessedPaymentEventRepository
         extends JpaRepository<ProcessedPaymentEvent, Long> {
 
     boolean existsByPaymentId(UUID paymentId);
+
+    int countByPaymentId(UUID paymentId);
 }
