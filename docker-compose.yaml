@@ -1,3 +1,4 @@
+
 services:
 
   # ---------------- POSTGRES ----------------
@@ -7,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: streamguard
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: streamguard123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5435:5432"
     volumes:
@@ -17,6 +18,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   # ---------------- PGADMIN ----------------
   pgadmin:
@@ -30,6 +32,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
 
   # ---------------- KAFKA ----------------
   kafka:
@@ -54,10 +57,11 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    restart: unless-stopped
 
   # ---------------- CONFIG SERVER ----------------
   config-server:
-    build: ./config-server
+    image: salmanfaris21/streamguard-config-server:latest
     container_name: streamguard-config-server
     ports:
       - "8888:8888"
@@ -66,11 +70,13 @@ services:
     volumes:
       - ./streamguard-config:/config
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
   # ---------------- EUREKA ----------------
   eureka-server:
-    build: ./service-reg
+    image: salmanfaris21/streamguard-eureka:latest
     container_name: streamguard-eureka
     ports:
       - "8761:8761"
@@ -78,18 +84,19 @@ services:
       SPRING_PROFILES_ACTIVE: docker
     depends_on:
       - config-server
+    restart: unless-stopped
 
   # ---------------- PAYMENT ----------------
   payment:
-    build: ./payment
+    image: salmanfaris21/streamguard-payment:latest
     container_name: streamguard-payment
     ports:
       - "8084:8084"
     environment:
       SPRING_PROFILES_ACTIVE: docker
 
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: streamguard123
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
       STREAMGUARD_JWT_SECRET: ${STREAMGUARD_JWT_SECRET}
 
@@ -101,18 +108,19 @@ services:
       - eureka-server
       - config-server
       - postgres
+    restart: unless-stopped
 
   # ---------------- ORDER ----------------
   order:
-    build: ./order
+    image: salmanfaris21/streamguard-order:latest
     container_name: streamguard-order
     ports:
       - "8086:8086"
     environment:
       SPRING_PROFILES_ACTIVE: docker
 
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: streamguard123
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
       STREAMGUARD_JWT_SECRET: ${STREAMGUARD_JWT_SECRET}
     depends_on:
@@ -120,10 +128,11 @@ services:
       - eureka-server
       - config-server
       - postgres
+    restart: unless-stopped
 
   # ---------------- API GATEWAY ----------------
   gateway:
-    build: ./gateway
+    image: salmanfaris21/streamguard-gateway:latest
     container_name: streamguard-gateway
     ports:
       - "8083:8083"
@@ -135,15 +144,17 @@ services:
       - order
       - eureka-server
       - config-server
+    restart: unless-stopped
 
   # ---------------- FRONTEND ----------------
   frontend:
-    build: ./frontend
+    build: ./Frontend
     container_name: streamguard-frontend
     ports:
       - "3000:80"
     depends_on:
       - gateway
+    restart: unless-stopped
 
 volumes:
   streamguard_data:

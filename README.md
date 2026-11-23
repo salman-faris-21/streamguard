@@ -101,7 +101,7 @@ flowchart TD
 - Backend images built with Spring Boot Buildpacks
 - Images published to Docker Hub
 - Frontend containerized with Node build + Nginx
-- Compose orchestration under `payment/docker-compose.yaml`
+- Compose orchestration under `docker-compose.yaml`
 
 ## Payment lifecycle
 
@@ -209,7 +209,7 @@ docker push salmanfaris21/streamguard-frontend
 
 ## Docker Compose
 
-Compose definition: `payment/docker-compose.yaml`.
+Compose definition: `docker-compose.yaml`.
 
 It starts PostgreSQL, PgAdmin, Kafka, Config Server, Eureka, Payment, Order, Gateway, and Frontend.
 
